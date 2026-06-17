@@ -8,6 +8,7 @@ import time
 import json
 import subprocess
 import tools
+import config
 import urllib.parse
 import mysql.connector
 from queue import Queue
@@ -22,14 +23,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 T = tools.Tools()
 
 # 创建连接池
-connection_pool = mysql.connector.pooling.MySQLConnectionPool(
-    pool_name="iptv_pool",
-    pool_size=10,
-    host='192.168.199.119',
-    user='iptv',
-    password='iptv',
-    database='iptv'
-)
+connection_pool = config.create_connection_pool(pool_size=10)
+HOTEL_SCAN_WORKERS = int(os.getenv("IPTV_HOTEL_SCAN_WORKERS", "32"))
 
 def process_hotels(data_list):
     # 获取当前时间
@@ -548,7 +543,7 @@ def sweep_hotels():
             # 获取当前时间
             current_time = datetime.now()
             # 多线程处理数量
-            queues_count = 6
+            queues_count = max(1, HOTEL_SCAN_WORKERS)
             # 创建线程队列
             data_queues = [Queue() for _ in range(queues_count)]
             

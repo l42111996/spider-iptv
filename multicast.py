@@ -6,6 +6,7 @@ import socket
 import requests
 import subprocess
 import tools
+import config
 import urllib.parse
 import urllib.request
 import mysql.connector
@@ -14,16 +15,11 @@ from datetime import datetime
 from urllib.parse import urlparse
 from mysql.connector import pooling
 from requests.exceptions import RequestException
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 创建连接池
-connection_pool = mysql.connector.pooling.MySQLConnectionPool(
-    pool_name="iptv_pool",
-    pool_size=10,
-    host='192.168.199.119',
-    user='iptv',
-    password='iptv',
-    database='iptv'
-)
+connection_pool = config.create_connection_pool(pool_size=10)
+UDPXY_STATUS_WORKERS = int(os.getenv("IPTV_UDPXY_STATUS_WORKERS", "20"))
 
 def process_channels(data_list):
     # 获取当前时间
@@ -103,6 +99,64 @@ def process_multicast(data_list):
         cursor.close()
         cnx.close()
 
+def get_udpxy_status(status_url):
+    actv = 0
+    status = 0
+    try:
+        status_response = requests.get(status_url, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+        if status_response.status_code == 200:
+            soup = BeautifulSoup(status_response.text, "html.parser")
+            client_table = soup.find('table', attrs={'cellspacing': '0'})
+            if client_table:
+                td_tags = client_table.find_all('td')
+                if len(td_tags) >= 4:
+                    actv = int(td_tags[3].text)
+                    status = 1
+    except (ValueError, RequestException):
+        pass
+    return actv, status
+
+def check_existing_udpxy(udpxy_info, mcast, mid):
+    current_time = datetime.now()
+    id = udpxy_info[0]
+    ip = udpxy_info[1]
+    port = udpxy_info[2]
+    status_url = "http://" + ip + ":" + str(port) + "/status"
+    actv, status = get_udpxy_status(status_url)
+    print(f"{current_time} udp更新 mcast：{mcast}，mid：{mid}，actv：{actv}，status：{status}")
+    return (actv, status, current_time, id)
+
+def check_existing_udpxys(udpxy_list, mcast, mid):
+    if not udpxy_list:
+        return []
+    max_workers = max(1, min(UDPXY_STATUS_WORKERS, len(udpxy_list)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(check_existing_udpxy, udpxy_info, mcast, mid)
+            for udpxy_info in udpxy_list
+        ]
+        return [future.result() for future in as_completed(futures)]
+
+def check_quake_udpxy(item, mid, mcast, current_time):
+    id = item["id"]
+    ip = item["ip"]
+    port = str(item["port"])
+    city = item["location"]["city_cn"]
+    status_url = "http://" + ip + ":" + port + "/status"
+    actv, status = get_udpxy_status(status_url)
+    return (id, mid, mcast, city, ip, port, actv, status, current_time)
+
+def check_quake_udpxys(data_list, mid, mcast, current_time):
+    if not data_list:
+        return []
+    max_workers = max(1, min(UDPXY_STATUS_WORKERS, len(data_list)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(check_quake_udpxy, item, mid, mcast, current_time)
+            for item in data_list
+        ]
+        return [future.result() for future in as_completed(futures)]
+
 def multicast_udpxy():
     # 获取当前时间
     current_time = datetime.now()
@@ -110,7 +164,10 @@ def multicast_udpxy():
     T = tools.Tools()
     # 调用360网络测绘接口
     api_url="https://quake.360.net/api/v3/search/quake_service"
-    api_token="你自己https://quake.360.net的token"
+    api_token=config.get_quake_api_token()
+    if not api_token:
+        print(f"{current_time} 未配置 QUAKE_API_TOKEN，跳过组播代理搜索")
+        return
     
     try:
         # 从连接池获取连接
@@ -137,39 +194,7 @@ def multicast_udpxy():
             cursor.execute(query_sql, (mid,))
             # 获取所有结果
             udpxy_list = cursor.fetchall()
-            udpxy_update_list = []
-            # 循环处理组播列表信息
-            for udpxy_info in udpxy_list:
-                # 获取当前时间
-                current_time = datetime.now()
-                id = udpxy_info[0]
-                ip = udpxy_info[1]
-                port = udpxy_info[2]
-                actv = 0
-                status = 0
-                status_url = "http://" + ip + ":" + str(port) + "/status"
-                status_response = T.request_body(status_url)
-                client_table = None
-                if status_response is not None:
-                    # 处理响应
-                    status_response.raise_for_status()
-                    # 检查请求是否成功
-                    html_content = status_response.text
-                    # 使用BeautifulSoup解析网页内容
-                    soup = BeautifulSoup(html_content, "html.parser")
-                    client_table = soup.find('table', attrs={'cellspacing': '0'})
-                # 如果找到了目标表格
-                if client_table:
-                    # 找到所有的<td>标签
-                    td_tags = client_table.find_all('td')
-                    # 获取第四个<td>标签中的内容
-                    addr = td_tags[2].text
-                    # print(f"{current_time} udp mcast：{mcast}，addr：{addr}")
-                    actv = int(td_tags[3].text)
-                    # if '0.0.0' not in addr and '192.168' not in addr
-                    status = 1
-                udpxy_update_list.append((actv, status, current_time, id))
-                print(f"{current_time} udp更新 mcast：{mcast}，mid：{mid}，actv：{actv}，status：{status}")
+            udpxy_update_list = check_existing_udpxys(udpxy_list, mcast, mid)
             
             # 更新udp代理至数据库
             process_udpxys(2, udpxy_update_list)
@@ -221,32 +246,11 @@ def multicast_udpxy():
                     total = json_data["meta"]["pagination"]["total"]
                     page_count = total/page_size
                     data_list = json_data["data"]
-                    for item in data_list:
-                        id = item["id"]
-                        ip = item["ip"]
-                        port = item["port"]
-                        city = item["location"]["city_cn"]
-                        actv = 0
-                        status = 0
-                        status_url = "http://" + ip + ":" + str(port) + "/status"
-                        status_response = T.request_body(status_url)
-                        client_table = None
-                        if status_response is not None:
-                            # 处理响应
-                            status_response.raise_for_status()
-                            # 检查请求是否成功
-                            html_content = status_response.text
-                            # 使用BeautifulSoup解析网页内容
-                            soup = BeautifulSoup(html_content, "html.parser")
-                            client_table = soup.find('table', attrs={'cellspacing': '0'})
-                            # print(f"{current_time} client_table：{client_table}")
-                        # 如果找到了目标表格
-                        if client_table:
-                            # 找到所有的<td>标签
-                            td_tags = client_table.find_all('td')
-                            # 获取第四个<td>标签中的内容
-                            actv = int(td_tags[3].text)
-                            status = 1
+                    checked_udpxys = check_quake_udpxys(data_list, mid, mcast, current_time)
+                    for checked_udpxy in checked_udpxys:
+                        id = checked_udpxy[0]
+                        actv = checked_udpxy[6]
+                        status = checked_udpxy[7]
                         # 检查udp代理是否存在
                         check_sql = "SELECT count(*) FROM iptv_udpxy WHERE id = %s"
                         cursor.execute(check_sql, (id,))
@@ -254,7 +258,7 @@ def multicast_udpxy():
                         is_exist = cursor.fetchone()[0] > 0
                         if not is_exist and id not in (info[0] for info in udpxy_insert_list):
                             # 将数据添加到插入列表
-                            udpxy_insert_list.append((id, mid, mcast, city, ip, port, actv, status, current_time))
+                            udpxy_insert_list.append(checked_udpxy)
                             print(f"{current_time} udp新增 mcast：{mcast}，id：{id}，actv：{actv}，status：{status}")
                             insert_count += status
                 # 接口翻页查询

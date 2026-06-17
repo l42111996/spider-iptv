@@ -1,0 +1,8 @@
+beautifulsoup4
+bs4
+m3u8
+mysql-connector-python
+numpy
+opencv-python-headless
+requests
+timeout-decorator

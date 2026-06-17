@@ -7,20 +7,14 @@ import m3u8
 import requests
 import numpy as np
 import tools
+import config
 from queue import Queue
 from datetime import datetime, timedelta
 from timeout_decorator import timeout, TimeoutError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 创建连接池
-connection_pool = mysql.connector.pooling.MySQLConnectionPool(
-    pool_name="iptv_pool",
-    pool_size=10,
-    host='192.168.199.119',
-    user='iptv',
-    password='iptv',
-    database='iptv'
-)
+connection_pool = config.create_connection_pool(pool_size=10)
 
 def process_channels(data_list):
     # 获取当前时间
@@ -308,7 +302,7 @@ def creat_iptvs():
         cursor = cnx.cursor()
         
         # 查询频道分类
-        query_category = "SELECT type FROM iptv_category WHERE enable = 1 GROUP BY type ORDER BY id;"
+        query_category = "SELECT type FROM iptv_category WHERE enable = 1 GROUP BY type ORDER BY MIN(id);"
         cursor.execute(query_category)
         categories = cursor.fetchall()
 
@@ -364,7 +358,7 @@ def creat_iptvs():
                         # print(f"{current_time} 频道地址重复或无效：{name},{url}")
                         continue
                 
-                print(f"{current_time} 频道名称{chl_id}：{chl_name}，有效源数量：{number}")
+                print(f"{current_time} 频道名称{type_id}：{chl_name}，有效源数量：{number}")
                 
                 if len(update_list) > 0:
                     # 执行批量更新

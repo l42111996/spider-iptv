@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.4
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: iptv
+      MYSQL_USER: iptv
+      MYSQL_PASSWORD: iptv
+    volumes:
+      - iptv-mysql-data:/var/lib/mysql
+      - ./data/iptv_data.sql:/docker-entrypoint-initdb.d/001-iptv_data.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uiptv", "-piptv"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  app:
+    build: .
+    init: true
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      IPTV_DB_HOST: mysql
+      IPTV_DB_PORT: "3306"
+      IPTV_DB_USER: iptv
+      IPTV_DB_PASSWORD: iptv
+      IPTV_DB_NAME: iptv
+      QUAKE_API_TOKEN: ${QUAKE_API_TOKEN:-}
+      IPTV_HOTEL_SCAN_WORKERS: ${IPTV_HOTEL_SCAN_WORKERS:-32}
+      IPTV_UDPXY_STATUS_WORKERS: ${IPTV_UDPXY_STATUS_WORKERS:-20}
+    volumes:
+      - /Users/king/Documents/iptv:/output
+
+volumes:
+  iptv-mysql-data:

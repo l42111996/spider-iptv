@@ -1,19 +1,13 @@
 import tools
 import requests
 import mysql.connector
+import config
 from datetime import datetime
 from bs4 import BeautifulSoup
 from mysql.connector import pooling
 
 # 创建连接池
-connection_pool = mysql.connector.pooling.MySQLConnectionPool(
-    pool_name="iptv_pool",
-    pool_size=5,
-    host='192.168.199.119',
-    user='iptv',
-    password='iptv',
-    database='iptv'
-)
+connection_pool = config.create_connection_pool(pool_size=5)
 
 def source_download():
     # 获取当前时间
@@ -151,4 +145,3 @@ def main_function():
 
 # 执行主程序函数
 main_function()
-
